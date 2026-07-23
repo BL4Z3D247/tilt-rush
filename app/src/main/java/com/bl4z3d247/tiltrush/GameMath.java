@@ -13,6 +13,26 @@ final class GameMath {
         return from + (to - from) * amount;
     }
 
+    static float remapScreenX(float rawX, float rawY, int rotationQuarterTurns) {
+        switch (rotationQuarterTurns) {
+            case 1: return rawY;
+            case 2: return -rawX;
+            case 3: return -rawY;
+            case 0:
+            default: return rawX;
+        }
+    }
+
+    static float remapScreenY(float rawX, float rawY, int rotationQuarterTurns) {
+        switch (rotationQuarterTurns) {
+            case 1: return -rawX;
+            case 2: return -rawY;
+            case 3: return rawX;
+            case 0:
+            default: return rawY;
+        }
+    }
+
     static String formatTime(long millis) {
         long safe = Math.max(0L, millis);
         long minutes = safe / 60_000L;

@@ -35,6 +35,7 @@ public final class TiltRushView extends View implements SensorEventListener {
     private static final float TAU = (float) (Math.PI * 2.0);
     private static final float ROAD_WIDTH = 210f;
     private static final int TOTAL_LAPS = 3;
+    private static final float GRAVITY = 900f;
     private static final String TAG = "TiltRush";
 
     private enum State { INTRO, COUNTDOWN, RACING, PAUSED, FINISHED, ERROR }
@@ -61,11 +62,63 @@ public final class TiltRushView extends View implements SensorEventListener {
         }
     }
 
+    private static final class Ramp {
+        final float x;
+        final float y;
+        final float angle;
+        final float halfLength;
+        final float halfWidth;
+
+        Ramp(float x, float y, float angle, float halfLength, float halfWidth) {
+            this.x = x;
+            this.y = y;
+            this.angle = angle;
+            this.halfLength = halfLength;
+            this.halfWidth = halfWidth;
+        }
+    }
+
+    private static final class Wall {
+        final float x1;
+        final float y1;
+        final float x2;
+        final float y2;
+        final float thickness;
+
+        Wall(float x1, float y1, float x2, float y2, float thickness) {
+            this.x1 = x1;
+            this.y1 = y1;
+            this.x2 = x2;
+            this.y2 = y2;
+            this.thickness = thickness;
+        }
+    }
+
+    private static final class BoostPad {
+        final float x;
+        final float y;
+        final float angle;
+        final float halfLength;
+        final float halfWidth;
+        long nextAvailableMillis;
+
+        BoostPad(float x, float y, float angle, float halfLength, float halfWidth) {
+            this.x = x;
+            this.y = y;
+            this.angle = angle;
+            this.halfLength = halfLength;
+            this.halfWidth = halfWidth;
+        }
+    }
+
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
     private final List<Point> track = new ArrayList<>();
     private final List<Cone> cones = new ArrayList<>();
+    private final List<Ramp> ramps = new ArrayList<>();
+    private final List<Wall> walls = new ArrayList<>();
+    private final List<BoostPad> boostPads = new ArrayList<>();
     private final int[] checkpointIndices = {0, 35, 70, 105, 140, 175, 210, 245};
 
     private final SensorManager sensorManager;
@@ -86,6 +139,11 @@ public final class TiltRushView extends View implements SensorEventListener {
     private float carY;
     private float carAngle;
     private float carSpeed;
+    private float carHeight;
+    private float verticalSpeed;
+    private float boostRemaining;
+    private float rampCooldown;
+    private float wallCooldown;
     private final float carRadius = 18f;
 
     private float cameraX;
@@ -196,13 +254,28 @@ public final class TiltRushView extends View implements SensorEventListener {
         steer = lerp(steer, targetSteer, 1f - (float) Math.pow(0.002, dt));
         throttle = lerp(throttle, targetThrottle, 1f - (float) Math.pow(0.003, dt));
 
+        boostRemaining = Math.max(0f, boostRemaining - dt);
+        rampCooldown = Math.max(0f, rampCooldown - dt);
+        wallCooldown = Math.max(0f, wallCooldown - dt);
+        if (carHeight > 0f || verticalSpeed > 0f) {
+            verticalSpeed -= GRAVITY * dt;
+            carHeight += verticalSpeed * dt;
+            if (carHeight <= 0f) {
+                carHeight = 0f;
+                verticalSpeed = 0f;
+                vibrate(22L);
+            }
+        }
+
         Nearest nearest = nearestTrackPoint(carX, carY);
         boolean onRoad = nearest.distance < ROAD_WIDTH * 0.5f;
 
         float acceleration = throttle >= 0f ? 275f * throttle : 440f * throttle;
         carSpeed += acceleration * dt;
+        if (boostRemaining > 0f && carSpeed > 0f) carSpeed += 235f * dt;
         carSpeed -= carSpeed * (onRoad ? 0.48f : 1.7f) * dt;
-        carSpeed = clamp(carSpeed, -75f, onRoad ? 520f : 220f);
+        float topSpeed = boostRemaining > 0f ? 735f : 520f;
+        carSpeed = clamp(carSpeed, -75f, onRoad ? topSpeed : 220f);
 
         float speedFactor = clamp(Math.abs(carSpeed) / 180f, 0.2f, 1.6f);
         carAngle += steer * 2.25f * speedFactor * dt * (carSpeed >= 0f ? 1f : -1f);
@@ -217,18 +290,52 @@ public final class TiltRushView extends View implements SensorEventListener {
             carY += dy / length * 82f * dt;
         }
 
+        if (rampCooldown <= 0f && carHeight < 4f && carSpeed > 145f) {
+            for (Ramp ramp : ramps) {
+                if (insideOrientedRectangle(carX, carY, ramp.x, ramp.y, ramp.angle,
+                        ramp.halfLength, ramp.halfWidth)) {
+                    carHeight = 2f;
+                    verticalSpeed = clamp(Math.abs(carSpeed) * 0.72f, 255f, 450f);
+                    carSpeed = Math.min(carSpeed + 55f, 650f);
+                    rampCooldown = 1.15f;
+                    showBanner("AIR!", 700L);
+                    vibrate(30L);
+                    break;
+                }
+            }
+        }
+
+        if (carHeight < 12f) {
+            for (BoostPad pad : boostPads) {
+                if (nowMillis >= pad.nextAvailableMillis
+                        && insideOrientedRectangle(carX, carY, pad.x, pad.y, pad.angle,
+                        pad.halfLength, pad.halfWidth)) {
+                    if (carSpeed >= 0f) carSpeed = Math.max(carSpeed, 570f);
+                    boostRemaining = 1.65f;
+                    pad.nextAvailableMillis = nowMillis + 2_600L;
+                    showBanner("BOOST!", 750L);
+                    vibrate(45L);
+                    break;
+                }
+            }
+        }
+
+        if (carHeight < 26f) resolveWallCollisions();
+
         if (collisionCooldown > 0f) collisionCooldown -= dt;
-        for (Cone cone : cones) {
-            float dx = carX - cone.x;
-            float dy = carY - cone.y;
-            float distance = length(dx, dy);
-            if (distance < carRadius + cone.radius && collisionCooldown <= 0f) {
-                carSpeed *= -0.25f;
-                carX += dx / distance * 18f;
-                carY += dy / distance * 18f;
-                collisionCooldown = 0.5f;
-                showBanner("HIT!", 450L);
-                vibrate(35L);
+        if (carHeight < 22f) {
+            for (Cone cone : cones) {
+                float dx = carX - cone.x;
+                float dy = carY - cone.y;
+                float distance = length(dx, dy);
+                if (distance < carRadius + cone.radius && collisionCooldown <= 0f) {
+                    carSpeed *= -0.25f;
+                    carX += dx / distance * 18f;
+                    carY += dy / distance * 18f;
+                    collisionCooldown = 0.5f;
+                    showBanner("HIT!", 450L);
+                    vibrate(35L);
+                }
             }
         }
 
@@ -279,6 +386,9 @@ public final class TiltRushView extends View implements SensorEventListener {
         for (int index = 0; index < checkpointIndices.length; index++) {
             drawCheckpoint(canvas, index, index == nextCheckpoint);
         }
+        drawBoostPads(canvas);
+        drawRamps(canvas);
+        drawWalls(canvas);
         drawCones(canvas);
         drawCar(canvas);
         drawDirectionArrow(canvas);
@@ -362,6 +472,99 @@ public final class TiltRushView extends View implements SensorEventListener {
         paint.setStyle(Paint.Style.FILL);
     }
 
+    private void drawBoostPads(Canvas canvas) {
+        for (BoostPad pad : boostPads) {
+            boolean ready = System.currentTimeMillis() >= pad.nextAvailableMillis;
+            int outer = ready ? Color.argb(170, 35, 245, 255) : Color.argb(80, 80, 105, 120);
+            int inner = ready ? Color.rgb(70, 255, 229) : Color.rgb(70, 85, 95);
+            drawOrientedRectangle(canvas, pad.x, pad.y, pad.angle,
+                    pad.halfLength, pad.halfWidth, outer);
+            drawOrientedRectangle(canvas, pad.x, pad.y, pad.angle,
+                    pad.halfLength * 0.72f, pad.halfWidth * 0.72f, inner);
+
+            float cosine = (float) Math.cos(pad.angle);
+            float sine = (float) Math.sin(pad.angle);
+            for (int i = -1; i <= 1; i++) {
+                float offset = i * pad.halfLength * 0.42f;
+                float centerX = pad.x + cosine * offset;
+                float centerY = pad.y + sine * offset;
+                Point tip = worldToScreen(centerX + cosine * 24f, centerY + sine * 24f);
+                Point left = worldToScreen(centerX - cosine * 14f - sine * 16f,
+                        centerY - sine * 14f + cosine * 16f);
+                Point right = worldToScreen(centerX - cosine * 14f + sine * 16f,
+                        centerY - sine * 14f - cosine * 16f);
+                path.reset();
+                path.moveTo(tip.x, tip.y);
+                path.lineTo(left.x, left.y);
+                path.lineTo(right.x, right.y);
+                path.close();
+                paint.setColor(ready ? Color.WHITE : Color.argb(80, 255, 255, 255));
+                canvas.drawPath(path, paint);
+            }
+        }
+    }
+
+    private void drawRamps(Canvas canvas) {
+        for (Ramp ramp : ramps) {
+            drawOrientedRectangle(canvas, ramp.x, ramp.y, ramp.angle,
+                    ramp.halfLength + 7f, ramp.halfWidth + 7f, Color.rgb(51, 24, 12));
+            drawOrientedRectangle(canvas, ramp.x, ramp.y, ramp.angle,
+                    ramp.halfLength, ramp.halfWidth, Color.rgb(224, 112, 42));
+
+            float cosine = (float) Math.cos(ramp.angle);
+            float sine = (float) Math.sin(ramp.angle);
+            for (int stripe = -2; stripe <= 2; stripe++) {
+                float along = stripe * ramp.halfLength * 0.38f;
+                float cx = ramp.x + cosine * along;
+                float cy = ramp.y + sine * along;
+                Point a = worldToScreen(cx - sine * ramp.halfWidth, cy + cosine * ramp.halfWidth);
+                Point b = worldToScreen(cx + sine * ramp.halfWidth, cy - cosine * ramp.halfWidth);
+                paint.setStrokeWidth(7f * cameraZoom);
+                paint.setColor(Color.argb(180, 255, 229, 170));
+                canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+            }
+        }
+    }
+
+    private void drawWalls(Canvas canvas) {
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        for (Wall wall : walls) {
+            Point a = worldToScreen(wall.x1, wall.y1);
+            Point b = worldToScreen(wall.x2, wall.y2);
+            paint.setStrokeWidth((wall.thickness * 2f + 8f) * cameraZoom);
+            paint.setColor(Color.rgb(18, 20, 27));
+            canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+            paint.setStrokeWidth(wall.thickness * 2f * cameraZoom);
+            paint.setColor(Color.rgb(178, 185, 200));
+            canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+            paint.setStrokeWidth(3f * cameraZoom);
+            paint.setColor(Color.rgb(245, 250, 255));
+            canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+        }
+    }
+
+    private void drawOrientedRectangle(Canvas canvas, float centerX, float centerY,
+                                       float angle, float halfLength, float halfWidth, int color) {
+        float cosine = (float) Math.cos(angle);
+        float sine = (float) Math.sin(angle);
+        float[][] local = {
+                {halfLength, halfWidth}, {halfLength, -halfWidth},
+                {-halfLength, -halfWidth}, {-halfLength, halfWidth}
+        };
+        path.reset();
+        for (int i = 0; i < local.length; i++) {
+            float worldX = centerX + cosine * local[i][0] - sine * local[i][1];
+            float worldY = centerY + sine * local[i][0] + cosine * local[i][1];
+            Point screen = worldToScreen(worldX, worldY);
+            if (i == 0) path.moveTo(screen.x, screen.y);
+            else path.lineTo(screen.x, screen.y);
+        }
+        path.close();
+        paint.setColor(color);
+        paint.setStyle(Paint.Style.FILL);
+        canvas.drawPath(path, paint);
+    }
+
     private void drawCones(Canvas canvas) {
         for (Cone cone : cones) {
             Point screen = worldToScreen(cone.x, cone.y);
@@ -386,8 +589,18 @@ public final class TiltRushView extends View implements SensorEventListener {
 
     private void drawCar(Canvas canvas) {
         Point screen = worldToScreen(carX, carY);
+        float lift = carHeight * 0.34f;
+        float scale = 1f + Math.min(0.18f, carHeight / 520f);
+
+        paint.setColor(Color.argb((int) clamp(95f - carHeight * 0.25f, 25f, 95f), 0, 0, 0));
+        canvas.drawOval(screen.x - 20f * scale + lift * 0.18f,
+                screen.y - 8f * scale + lift * 0.38f,
+                screen.x + 20f * scale + lift * 0.18f,
+                screen.y + 25f * scale + lift * 0.38f, paint);
+
         canvas.save();
-        canvas.translate(screen.x, screen.y);
+        canvas.translate(screen.x, screen.y - lift);
+        canvas.scale(scale, scale);
 
         paint.setShader(new LinearGradient(0, -30, 0, 30,
                 new int[]{Color.rgb(232, 253, 255), Color.rgb(103, 233, 255), Color.rgb(19, 116, 255)},
@@ -482,6 +695,11 @@ public final class TiltRushView extends View implements SensorEventListener {
         drawPill(canvas, getWidth() - 173, 16, 155, 82, "SPEED",
                 Integer.toString(Math.max(0, Math.round(Math.abs(carSpeed) * 0.17f))), true);
 
+        String power = carHeight > 1f ? "AIR" : boostRemaining > 0f ? "BOOST" : "READY";
+        int powerColor = carHeight > 1f ? Color.rgb(255, 196, 92)
+                : boostRemaining > 0f ? Color.rgb(70, 255, 229) : Color.rgb(170, 178, 201);
+        drawText(canvas, power, 22f, getHeight() - 23f, 17f, powerColor, true);
+
         pauseButton.set(getWidth() - 75, 112, getWidth() - 18, 169);
         paint.setColor(Color.argb(210, 8, 12, 24));
         canvas.drawRoundRect(pauseButton, 14, 14, paint);
@@ -536,9 +754,9 @@ public final class TiltRushView extends View implements SensorEventListener {
         drawText(canvas, "TILT RUSH", left, card.top + 112f, 58, Color.WHITE, true);
         drawText(canvas, "Tilt left and right to steer.", left, card.top + 165f, 22,
                 Color.rgb(212, 220, 238), false);
-        drawText(canvas, "Tilt the top edge forward to accelerate; pull it back to brake.",
+        drawText(canvas, "Tilt forward to accelerate; pull back to brake.",
                 left, card.top + 199f, 18, Color.rgb(170, 178, 201), false);
-        drawText(canvas, "Hold the phone in your normal playing position, then calibrate.",
+        drawText(canvas, "Hit boost pads, launch from ramps, and avoid walls.",
                 left, card.top + 231f, 18, Color.rgb(170, 178, 201), false);
 
         startButton.set(card.left + 36f, card.bottom - 92f, card.right - 36f, card.bottom - 30f);
@@ -687,6 +905,12 @@ public final class TiltRushView extends View implements SensorEventListener {
         cameraZoom = 1f;
         steer = 0f;
         throttle = 0f;
+        carHeight = 0f;
+        verticalSpeed = 0f;
+        boostRemaining = 0f;
+        rampCooldown = 0f;
+        wallCooldown = 0f;
+        for (BoostPad pad : boostPads) pad.nextAvailableMillis = 0L;
     }
 
     private void showBanner(String text, long durationMillis) {
@@ -711,27 +935,8 @@ public final class TiltRushView extends View implements SensorEventListener {
         Display display = getDisplay();
         if (display != null) rotation = display.getRotation();
 
-        float screenX;
-        float screenY;
-        switch (rotation) {
-            case Surface.ROTATION_90:
-                screenX = -rawScreenY;
-                screenY = rawScreenX;
-                break;
-            case Surface.ROTATION_180:
-                screenX = -rawScreenX;
-                screenY = -rawScreenY;
-                break;
-            case Surface.ROTATION_270:
-                screenX = rawScreenY;
-                screenY = -rawScreenX;
-                break;
-            case Surface.ROTATION_0:
-            default:
-                screenX = rawScreenX;
-                screenY = rawScreenY;
-                break;
-        }
+        float screenX = GameMath.remapScreenX(rawScreenX, rawScreenY, rotation);
+        float screenY = GameMath.remapScreenY(rawScreenX, rawScreenY, rotation);
 
         filteredScreenX = filteredScreenX * 0.78f + screenX * 0.22f;
         filteredScreenY = filteredScreenY * 0.78f + screenY * 0.22f;
@@ -771,6 +976,104 @@ public final class TiltRushView extends View implements SensorEventListener {
             cones.add(new Cone(point.x + normal.x * 70f,
                     point.y + normal.y * 70f, 16f));
         }
+
+        addRamp(55, 70f, 68f);
+        addRamp(188, 72f, 70f);
+
+        addBoostPad(22, 64f, 58f);
+        addBoostPad(120, 64f, 58f);
+        addBoostPad(226, 64f, 58f);
+
+        addWallRun(76, 108, 1);
+        addWallRun(148, 181, -1);
+        addWallRun(218, 252, 1);
+        addWallRun(218, 252, -1);
+    }
+
+    private void addRamp(int trackIndex, float halfLength, float halfWidth) {
+        Point point = pointAt(trackIndex);
+        Point tangent = tangentAt(trackIndex);
+        ramps.add(new Ramp(point.x, point.y,
+                (float) Math.atan2(tangent.y, tangent.x), halfLength, halfWidth));
+    }
+
+    private void addBoostPad(int trackIndex, float halfLength, float halfWidth) {
+        Point point = pointAt(trackIndex);
+        Point tangent = tangentAt(trackIndex);
+        boostPads.add(new BoostPad(point.x, point.y,
+                (float) Math.atan2(tangent.y, tangent.x), halfLength, halfWidth));
+    }
+
+    private void addWallRun(int startIndex, int endIndex, int side) {
+        float offset = ROAD_WIDTH * 0.47f;
+        for (int index = startIndex; index < endIndex; index += 5) {
+            Point first = pointAt(index);
+            Point second = pointAt(Math.min(index + 5, endIndex));
+            Point firstNormal = normalAt(index);
+            Point secondNormal = normalAt(Math.min(index + 5, endIndex));
+            walls.add(new Wall(
+                    first.x + firstNormal.x * offset * side,
+                    first.y + firstNormal.y * offset * side,
+                    second.x + secondNormal.x * offset * side,
+                    second.y + secondNormal.y * offset * side,
+                    10f));
+        }
+    }
+
+    private void resolveWallCollisions() {
+        for (Wall wall : walls) {
+            float segmentX = wall.x2 - wall.x1;
+            float segmentY = wall.y2 - wall.y1;
+            float segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+            float projection = segmentLengthSquared <= 0.0001f ? 0f
+                    : ((carX - wall.x1) * segmentX + (carY - wall.y1) * segmentY)
+                    / segmentLengthSquared;
+            projection = clamp(projection, 0f, 1f);
+            float closestX = wall.x1 + segmentX * projection;
+            float closestY = wall.y1 + segmentY * projection;
+            float dx = carX - closestX;
+            float dy = carY - closestY;
+            float distance = length(dx, dy);
+            float minimumDistance = carRadius + wall.thickness;
+            if (distance < minimumDistance) {
+                float normalX = dx / distance;
+                float normalY = dy / distance;
+                float penetration = minimumDistance - distance + 1f;
+                carX += normalX * penetration;
+                carY += normalY * penetration;
+
+                if (wallCooldown <= 0f) {
+                    float velocityX = (float) Math.cos(carAngle) * carSpeed;
+                    float velocityY = (float) Math.sin(carAngle) * carSpeed;
+                    float intoWall = velocityX * normalX + velocityY * normalY;
+                    if (intoWall < 0f) {
+                        velocityX -= 1.65f * intoWall * normalX;
+                        velocityY -= 1.65f * intoWall * normalY;
+                        carAngle = (float) Math.atan2(velocityY, velocityX);
+                        carSpeed = Math.min(length(velocityX, velocityY) * 0.58f, 390f);
+                    } else {
+                        carSpeed *= 0.62f;
+                    }
+                    wallCooldown = 0.32f;
+                    boostRemaining = 0f;
+                    showBanner("WALL!", 420L);
+                    vibrate(45L);
+                }
+            }
+        }
+    }
+
+    private static boolean insideOrientedRectangle(float pointX, float pointY,
+                                                    float centerX, float centerY,
+                                                    float angle, float halfLength,
+                                                    float halfWidth) {
+        float dx = pointX - centerX;
+        float dy = pointY - centerY;
+        float cosine = (float) Math.cos(angle);
+        float sine = (float) Math.sin(angle);
+        float along = dx * cosine + dy * sine;
+        float across = -dx * sine + dy * cosine;
+        return Math.abs(along) <= halfLength && Math.abs(across) <= halfWidth;
     }
 
     private static Point catmull(Point p0, Point p1, Point p2, Point p3, float t) {

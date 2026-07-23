@@ -12,6 +12,18 @@ public final class GameMathTest {
     }
 
     @Test
+    public void landscapeNinetyMapsDeviceAxesToScreenAxes() {
+        assertEquals(7f, GameMath.remapScreenX(3f, 7f, 1), 0.001f);
+        assertEquals(-3f, GameMath.remapScreenY(3f, 7f, 1), 0.001f);
+    }
+
+    @Test
+    public void reverseLandscapeMapsDeviceAxesToScreenAxes() {
+        assertEquals(-7f, GameMath.remapScreenX(3f, 7f, 3), 0.001f);
+        assertEquals(3f, GameMath.remapScreenY(3f, 7f, 3), 0.001f);
+    }
+
+    @Test
     public void timeFormattingIsRaceFriendly() {
         assertEquals("1:02.345", GameMath.formatTime(62_345L));
     }

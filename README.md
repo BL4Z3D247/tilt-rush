@@ -1,6 +1,6 @@
 # Tilt Rush
 
-A native Android tilt-controlled racing prototype.
+A native Android tilt-controlled arcade racing game.
 
 ## Controls
 
@@ -62,8 +62,16 @@ GitHub Actions will then run the tests and produce a downloadable debug APK unde
 - Landscape immersive mode
 - Tilt steering, acceleration, braking, and reverse
 - Three-lap checkpoint course
+- Correct screen-relative tilt controls in either landscape orientation
+- Launch ramps and airborne physics
+- Concrete wall sections with collision response
+- Reusable speed-boost pads and temporary higher top speed
 - Off-road slowdown
 - Cone collisions and vibration feedback
 - Race timer and persistent best time
 - Pause and replay controls
 - Automated APK build workflow
+
+## v0.2.0 course objects
+
+Orange striped platforms are ramps. Cyan arrow pads trigger a speed boost. Concrete barriers cannot be driven through, but ramps can launch the car over low cones.
