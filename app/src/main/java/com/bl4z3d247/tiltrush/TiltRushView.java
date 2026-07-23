@@ -21,6 +21,7 @@ import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.util.Log;
 import android.view.Display;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -34,8 +35,9 @@ public final class TiltRushView extends View implements SensorEventListener {
     private static final float TAU = (float) (Math.PI * 2.0);
     private static final float ROAD_WIDTH = 210f;
     private static final int TOTAL_LAPS = 3;
+    private static final String TAG = "TiltRush";
 
-    private enum State { INTRO, COUNTDOWN, RACING, PAUSED, FINISHED }
+    private enum State { INTRO, COUNTDOWN, RACING, PAUSED, FINISHED, ERROR }
 
     private static final class Point {
         float x;
@@ -107,6 +109,7 @@ public final class TiltRushView extends View implements SensorEventListener {
 
     private String banner = "";
     private long bannerUntilMillis;
+    private String runtimeError = "";
 
     private final RectF startButton = new RectF();
     private final RectF pauseButton = new RectF();
@@ -119,8 +122,8 @@ public final class TiltRushView extends View implements SensorEventListener {
         setBackgroundColor(Color.rgb(5, 7, 12));
 
         sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
-        gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gravitySensor = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
+        accelerometer = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
         preferences = context.getSharedPreferences("tilt_rush", Context.MODE_PRIVATE);
 
@@ -131,7 +134,7 @@ public final class TiltRushView extends View implements SensorEventListener {
     public void onHostResume() {
         Sensor chosen = gravitySensor != null ? gravitySensor : accelerometer;
         usingAccelerometerFallback = gravitySensor == null;
-        if (chosen != null) {
+        if (chosen != null && sensorManager != null) {
             sensorManager.registerListener(this, chosen, SensorManager.SENSOR_DELAY_GAME);
         }
         lastFrameNanos = 0L;
@@ -139,21 +142,39 @@ public final class TiltRushView extends View implements SensorEventListener {
     }
 
     public void onHostPause() {
-        sensorManager.unregisterListener(this);
+        if (sensorManager != null) sensorManager.unregisterListener(this);
         if (state == State.RACING) pauseRace();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        long nowNanos = System.nanoTime();
-        float dt = lastFrameNanos == 0L ? 0f : Math.min(0.033f, (nowNanos - lastFrameNanos) / 1_000_000_000f);
-        lastFrameNanos = nowNanos;
-        long nowMillis = System.currentTimeMillis();
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            postInvalidateOnAnimation();
+            return;
+        }
 
-        update(dt, nowMillis);
-        drawWorld(canvas);
-        drawHud(canvas, nowMillis);
+        try {
+            long nowNanos = System.nanoTime();
+            float dt = lastFrameNanos == 0L ? 0f
+                    : Math.min(0.033f, (nowNanos - lastFrameNanos) / 1_000_000_000f);
+            lastFrameNanos = nowNanos;
+            long nowMillis = System.currentTimeMillis();
+
+            if (state != State.ERROR) {
+                update(dt, nowMillis);
+                drawWorld(canvas);
+                drawHud(canvas, nowMillis);
+            } else {
+                drawRuntimeError(canvas);
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "Game frame failed", error);
+            runtimeError = Log.getStackTraceString(error);
+            if (runtimeError.length() > 2800) runtimeError = runtimeError.substring(0, 2800);
+            state = State.ERROR;
+            drawRuntimeError(canvas);
+        }
 
         postInvalidateOnAnimation();
     }
@@ -245,8 +266,9 @@ public final class TiltRushView extends View implements SensorEventListener {
         int width = getWidth();
         int height = getHeight();
 
+        float gradientRadius = Math.max(1f, Math.max(width, height) * 0.8f);
         paint.setShader(new RadialGradient(width * 0.5f, height * 0.58f,
-                Math.max(width, height) * 0.8f,
+                gradientRadius,
                 new int[]{Color.rgb(11, 31, 29), Color.rgb(5, 7, 12)},
                 new float[]{0f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, width, height, paint);
@@ -834,6 +856,31 @@ public final class TiltRushView extends View implements SensorEventListener {
 
     private static float positiveModulo(float value, float modulus) {
         return ((value % modulus) + modulus) % modulus;
+    }
+
+    private void drawRuntimeError(Canvas canvas) {
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.rgb(8, 11, 21));
+        canvas.drawRect(0, 0, getWidth(), getHeight(), paint);
+
+        drawText(canvas, "TILT RUSH ERROR", 28f, 50f, 24f,
+                Color.rgb(255, 95, 122), true);
+        drawText(canvas, "The app stayed open so the real crash can be photographed.",
+                28f, 82f, 16f, Color.WHITE, false);
+
+        String safe = runtimeError == null || runtimeError.isEmpty()
+                ? "Unknown rendering error" : runtimeError;
+        String[] lines = safe.split("\n");
+        float y = 116f;
+        int shown = 0;
+        for (String line : lines) {
+            if (shown >= 18 || y > getHeight() - 20f) break;
+            String clipped = line.length() > 110 ? line.substring(0, 110) : line;
+            drawText(canvas, clipped, 28f, y, 13f, Color.rgb(212, 220, 238), false);
+            y += 20f;
+            shown++;
+        }
     }
 
     private void vibrate(long milliseconds) {
