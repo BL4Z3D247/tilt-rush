@@ -250,7 +250,7 @@ public final class TiltRushView extends View implements SensorEventListener {
         if (state != State.RACING) return;
 
         float targetSteer = clamp((filteredScreenX - calibrationX) / 3.8f, -1f, 1f);
-        float targetThrottle = clamp((calibrationY - filteredScreenY) / 3.6f, -1f, 1f);
+        float targetThrottle = GameMath.throttleFromScreenTilt(filteredScreenY, calibrationY, 3.6f);
         steer = lerp(steer, targetSteer, 1f - (float) Math.pow(0.002, dt));
         throttle = lerp(throttle, targetThrottle, 1f - (float) Math.pow(0.003, dt));
 

@@ -4,6 +4,8 @@ A native Android tilt-controlled arcade racing game.
 
 ## Controls
 
+**v0.2.1:** forward tilt accelerates; pulling back brakes/reverses.
+
 - Hold the phone in landscape in your normal playing position.
 - Tap **START + CALIBRATE**.
 - Tilt left or right to steer.

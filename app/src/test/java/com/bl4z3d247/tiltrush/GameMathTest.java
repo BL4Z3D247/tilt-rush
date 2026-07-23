@@ -24,6 +24,21 @@ public final class GameMathTest {
     }
 
     @Test
+    public void forwardTiltProducesPositiveThrottle() {
+        assertEquals(1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f), 0.001f);
+    }
+
+    @Test
+    public void backwardTiltProducesNegativeThrottle() {
+        assertEquals(-1f, GameMath.throttleFromScreenTilt(0.4f, 4f, 3.6f), 0.001f);
+    }
+
+    @Test
+    public void neutralPoseProducesNoThrottle() {
+        assertEquals(0f, GameMath.throttleFromScreenTilt(4f, 4f, 3.6f), 0.001f);
+    }
+
+    @Test
     public void timeFormattingIsRaceFriendly() {
         assertEquals("1:02.345", GameMath.formatTime(62_345L));
     }
