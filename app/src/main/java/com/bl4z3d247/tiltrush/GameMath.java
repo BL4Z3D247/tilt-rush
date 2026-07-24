@@ -14,14 +14,24 @@ final class GameMath {
     }
 
     /**
-     * Converts screen-relative pitch into throttle. After calibration, tilting
-     * the top edge of the phone forward increases screen Y on the supported
-     * landscape mappings, so a positive delta must mean forward acceleration.
+     * Converts a calibrated screen-relative pitch delta into throttle.
+     * forwardDirection is learned from the player's actual forward tilt and
+     * is therefore either +1 or -1 depending on the device/orientation.
      */
     static float throttleFromScreenTilt(float currentScreenY, float calibratedScreenY,
-                                        float fullScaleDelta) {
+                                        float fullScaleDelta, float forwardDirection) {
         float safeScale = Math.max(0.001f, Math.abs(fullScaleDelta));
-        return clamp((currentScreenY - calibratedScreenY) / safeScale, -1f, 1f);
+        float safeDirection = forwardDirection < 0f ? -1f : 1f;
+        return clamp(((currentScreenY - calibratedScreenY) / safeScale) * safeDirection,
+                -1f, 1f);
+    }
+
+    static float learnedForwardDirection(float largestForwardDelta, float fallbackDirection,
+                                         float minimumUsefulDelta) {
+        if (Math.abs(largestForwardDelta) < Math.abs(minimumUsefulDelta)) {
+            return fallbackDirection < 0f ? -1f : 1f;
+        }
+        return largestForwardDelta < 0f ? -1f : 1f;
     }
 
     static float remapScreenX(float rawX, float rawY, int rotationQuarterTurns) {

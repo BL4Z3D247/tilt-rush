@@ -4,7 +4,7 @@ A native Android tilt-controlled arcade racing game.
 
 ## Controls
 
-**v0.2.1:** forward tilt accelerates; pulling back brakes/reverses.
+**v0.2.2:** forward tilt accelerates; pulling back brakes/reverses.
 
 - Hold the phone in landscape in your normal playing position.
 - Tap **START + CALIBRATE**.
@@ -77,3 +77,10 @@ GitHub Actions will then run the tests and produce a downloadable debug APK unde
 ## v0.2.0 course objects
 
 Orange striped platforms are ramps. Cyan arrow pads trigger a speed boost. Concrete barriers cannot be driven through, but ramps can launch the car over low cones.
+
+
+## v0.2.2 control calibration
+
+The game no longer assumes a universal Android pitch sign. After tapping Start,
+it asks the player to tilt the top edge of the phone forward for about 1.5 seconds,
+learns that device/orientation-specific direction, saves it, and then starts the race.

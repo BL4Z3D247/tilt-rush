@@ -24,18 +24,34 @@ public final class GameMathTest {
     }
 
     @Test
-    public void forwardTiltProducesPositiveThrottle() {
-        assertEquals(1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f), 0.001f);
+    public void positiveSensorDeltaCanBeLearnedAsForward() {
+        assertEquals(1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f, 1f), 0.001f);
     }
 
     @Test
-    public void backwardTiltProducesNegativeThrottle() {
-        assertEquals(-1f, GameMath.throttleFromScreenTilt(0.4f, 4f, 3.6f), 0.001f);
+    public void negativeSensorDeltaCanBeLearnedAsForward() {
+        assertEquals(1f, GameMath.throttleFromScreenTilt(0.4f, 4f, 3.6f, -1f), 0.001f);
+    }
+
+    @Test
+    public void oppositeTiltBecomesBrakeAfterLearning() {
+        assertEquals(-1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f, -1f), 0.001f);
     }
 
     @Test
     public void neutralPoseProducesNoThrottle() {
-        assertEquals(0f, GameMath.throttleFromScreenTilt(4f, 4f, 3.6f), 0.001f);
+        assertEquals(0f, GameMath.throttleFromScreenTilt(4f, 4f, 3.6f, -1f), 0.001f);
+    }
+
+    @Test
+    public void forwardLearningUsesTheObservedSign() {
+        assertEquals(-1f, GameMath.learnedForwardDirection(-2.1f, 1f, 0.35f), 0.001f);
+        assertEquals(1f, GameMath.learnedForwardDirection(2.1f, -1f, 0.35f), 0.001f);
+    }
+
+    @Test
+    public void weakForwardLearningKeepsFallback() {
+        assertEquals(-1f, GameMath.learnedForwardDirection(0.1f, -1f, 0.35f), 0.001f);
     }
 
     @Test
