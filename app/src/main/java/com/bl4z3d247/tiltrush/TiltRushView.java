@@ -156,15 +156,32 @@ public final class TiltRushView extends View implements SensorEventListener {
 
     private float rawScreenX;
     private float rawScreenY;
+    private float rawScreenZ;
     private float filteredScreenX;
     private float filteredScreenY;
+    private float filteredScreenZ;
     private float calibrationX;
     private float calibrationY;
+    private float calibrationZ;
     private float steer;
     private float throttle;
-    private float throttleDirection;
-    private float forwardLearnLargestDelta;
+
+    // Learned from the player's actual 3D forward-tilt gesture. Using the
+    // complete gravity-vector change avoids guessing a device axis or sign.
+    private float forwardAxisX;
+    private float forwardAxisY = 1f;
+    private float forwardAxisZ;
+    private float forwardScale = 2.4f;
+    private float neutralSumX;
+    private float neutralSumY;
+    private float neutralSumZ;
+    private float forwardSumX;
+    private float forwardSumY;
+    private float forwardSumZ;
+    private int neutralSampleCount;
+    private int forwardSampleCount;
     private long forwardLearnStartMillis;
+    private long calibrationRetryUntilMillis;
     private boolean calibrated;
     private boolean usingAccelerometerFallback;
 
@@ -187,7 +204,6 @@ public final class TiltRushView extends View implements SensorEventListener {
         accelerometer = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
         preferences = context.getSharedPreferences("tilt_rush", Context.MODE_PRIVATE);
-        throttleDirection = preferences.getFloat("throttle_direction", -1f);
 
         buildTrack();
         resetCar();
@@ -244,16 +260,59 @@ public final class TiltRushView extends View implements SensorEventListener {
     private void update(float dt, long nowMillis) {
         if (state == State.LEARN_FORWARD) {
             long learnElapsed = nowMillis - forwardLearnStartMillis;
-            if (learnElapsed >= 550L) {
-                float delta = filteredScreenY - calibrationY;
-                if (Math.abs(delta) > Math.abs(forwardLearnLargestDelta)) {
-                    forwardLearnLargestDelta = delta;
-                }
+
+            // First average the player's neutral holding pose. Then average a
+            // deliberate forward tilt. This learns a complete 3D motion vector
+            // instead of assuming that forward is always screen Y or a fixed sign.
+            if (learnElapsed >= 120L && learnElapsed < 720L) {
+                neutralSumX += filteredScreenX;
+                neutralSumY += filteredScreenY;
+                neutralSumZ += filteredScreenZ;
+                neutralSampleCount++;
+            } else if (learnElapsed >= 1_050L && learnElapsed < 2_450L) {
+                forwardSumX += filteredScreenX;
+                forwardSumY += filteredScreenY;
+                forwardSumZ += filteredScreenZ;
+                forwardSampleCount++;
             }
-            if (learnElapsed >= 2_350L) {
-                throttleDirection = GameMath.learnedForwardDirection(
-                        forwardLearnLargestDelta, throttleDirection, 0.35f);
-                preferences.edit().putFloat("throttle_direction", throttleDirection).apply();
+
+            if (learnElapsed >= 2_550L) {
+                if (neutralSampleCount > 0) {
+                    calibrationX = neutralSumX / neutralSampleCount;
+                    calibrationY = neutralSumY / neutralSampleCount;
+                    calibrationZ = neutralSumZ / neutralSampleCount;
+                } else {
+                    calibrationX = filteredScreenX;
+                    calibrationY = filteredScreenY;
+                    calibrationZ = filteredScreenZ;
+                }
+
+                float forwardX = forwardSampleCount > 0
+                        ? forwardSumX / forwardSampleCount : filteredScreenX;
+                float forwardY = forwardSampleCount > 0
+                        ? forwardSumY / forwardSampleCount : filteredScreenY;
+                float forwardZ = forwardSampleCount > 0
+                        ? forwardSumZ / forwardSampleCount : filteredScreenZ;
+                float deltaX = forwardX - calibrationX;
+                float deltaY = forwardY - calibrationY;
+                float deltaZ = forwardZ - calibrationZ;
+                float magnitude = GameMath.magnitude3(deltaX, deltaY, deltaZ);
+
+                if (magnitude < 0.32f) {
+                    // Do not silently keep a bad old sign. Restart and require a
+                    // real forward gesture so the controls cannot be inverted.
+                    resetForwardLearning(nowMillis);
+                    calibrationRetryUntilMillis = nowMillis + 950L;
+                    vibrate(80L);
+                    return;
+                }
+
+                forwardAxisX = deltaX / magnitude;
+                forwardAxisY = deltaY / magnitude;
+                forwardAxisZ = deltaZ / magnitude;
+                forwardScale = clamp(magnitude * 0.92f, 1.15f, 4.8f);
+                calibrated = true;
+
                 countdownStartMillis = nowMillis;
                 state = State.COUNTDOWN;
                 showBanner("CENTER THE PHONE", 900L);
@@ -273,9 +332,14 @@ public final class TiltRushView extends View implements SensorEventListener {
 
         if (state != State.RACING) return;
 
-        float targetSteer = clamp((filteredScreenX - calibrationX) / 3.8f, -1f, 1f);
-        float targetThrottle = GameMath.throttleFromScreenTilt(
-                filteredScreenY, calibrationY, 3.6f, throttleDirection);
+        float deltaX = filteredScreenX - calibrationX;
+        float deltaY = filteredScreenY - calibrationY;
+        float deltaZ = filteredScreenZ - calibrationZ;
+        float targetThrottle = GameMath.throttleFromVector(deltaX, deltaY, deltaZ,
+                forwardAxisX, forwardAxisY, forwardAxisZ, forwardScale);
+
+        // Preserve the steering mapping that was already confirmed correct.
+        float targetSteer = clamp(deltaX / 3.8f, -1f, 1f);
         steer = lerp(steer, targetSteer, 1f - (float) Math.pow(0.002, dt));
         throttle = lerp(throttle, targetThrottle, 1f - (float) Math.pow(0.003, dt));
 
@@ -729,6 +793,17 @@ public final class TiltRushView extends View implements SensorEventListener {
                 : boostRemaining > 0f ? Color.rgb(70, 255, 229) : Color.rgb(170, 178, 201);
         drawText(canvas, power, 22f, getHeight() - 23f, 17f, powerColor, true);
 
+        String driveState = throttle > 0.08f
+                ? "FORWARD " + Math.round(throttle * 100f) + "%"
+                : throttle < -0.08f
+                ? "BRAKE / REVERSE " + Math.round(-throttle * 100f) + "%"
+                : "COAST";
+        int driveColor = throttle > 0.08f ? Color.rgb(116, 255, 154)
+                : throttle < -0.08f ? Color.rgb(255, 105, 128)
+                : Color.rgb(170, 178, 201);
+        drawTextAligned(canvas, driveState, getWidth() - 22f, getHeight() - 23f,
+                17f, driveColor, true, Paint.Align.RIGHT);
+
         pauseButton.set(getWidth() - 75, 112, getWidth() - 18, 169);
         paint.setColor(Color.argb(210, 8, 12, 24));
         canvas.drawRoundRect(pauseButton, 14, 14, paint);
@@ -785,7 +860,7 @@ public final class TiltRushView extends View implements SensorEventListener {
                 Color.rgb(212, 220, 238), false);
         drawText(canvas, "Tilt forward to accelerate; pull back to brake.",
                 left, card.top + 199f, 18, Color.rgb(170, 178, 201), false);
-        drawText(canvas, "The game learns your phone's forward direction at startup.",
+        drawText(canvas, "A 3-axis calibration learns your exact forward gesture.",
                 left, card.top + 231f, 18, Color.rgb(170, 178, 201), false);
 
         startButton.set(card.left + 36f, card.bottom - 92f, card.right - 36f, card.bottom - 30f);
@@ -796,7 +871,7 @@ public final class TiltRushView extends View implements SensorEventListener {
         paint.setShader(null);
         drawCenteredText(canvas, "START + CALIBRATE", startButton.centerX(),
                 startButton.centerY() + 8f, 21, Color.rgb(3, 16, 20), true);
-        drawText(canvas, "v0.2.2", card.right - 82f, card.top + 43f, 14,
+        drawText(canvas, "v0.3.0", card.right - 82f, card.top + 43f, 14,
                 Color.rgb(130, 140, 165), true);
 
         if (gravitySensor == null && accelerometer == null) {
@@ -849,18 +924,22 @@ public final class TiltRushView extends View implements SensorEventListener {
         canvas.drawRoundRect(card, 28, 28, paint);
 
         long elapsed = nowMillis - forwardLearnStartMillis;
-        String heading = elapsed < 550L ? "HOLD YOUR NORMAL POSITION" : "TILT FORWARD NOW";
-        String instruction = elapsed < 550L
-                ? "Keep the phone steady while Tilt Rush captures neutral."
-                : "Push the top edge of the phone away from you and hold it.";
+        boolean retrying = nowMillis < calibrationRetryUntilMillis;
+        String heading = retrying ? "TILT WAS TOO SMALL"
+                : elapsed < 720L ? "HOLD YOUR NORMAL POSITION" : "TILT FORWARD NOW";
+        String instruction = retrying
+                ? "Hold steady, then tilt farther forward when prompted."
+                : elapsed < 720L
+                ? "Keep the phone steady while Tilt Rush averages neutral."
+                : "Push the top edge away from you and hold it until the countdown.";
         drawCenteredText(canvas, heading, card.centerX(), card.top + 82f,
                 elapsed < 550L ? 32f : 42f, Color.WHITE, true);
         drawCenteredText(canvas, instruction,
                 card.centerX(), card.top + 128f, 18f, Color.rgb(190, 199, 220), false);
-        drawCenteredText(canvas, "Tilt Rush is learning which sensor direction means forward.",
+        drawCenteredText(canvas, "Tilt Rush is learning your complete 3-axis forward motion.",
                 card.centerX(), card.top + 159f, 16f, Color.rgb(150, 161, 188), false);
 
-        float progress = clamp((nowMillis - forwardLearnStartMillis) / 2_350f, 0f, 1f);
+        float progress = clamp((nowMillis - forwardLearnStartMillis) / 2_550f, 0f, 1f);
         RectF bar = new RectF(card.left + 52f, card.bottom - 70f,
                 card.right - 52f, card.bottom - 48f);
         paint.setColor(Color.argb(55, 255, 255, 255));
@@ -926,17 +1005,27 @@ public final class TiltRushView extends View implements SensorEventListener {
     }
 
     private void calibrateAndStart() {
-        calibrationX = filteredScreenX;
-        calibrationY = filteredScreenY;
-        calibrated = true;
+        calibrated = false;
+        calibrationRetryUntilMillis = 0L;
         resetCar();
         lap = 1;
         nextCheckpoint = 1;
         pausedDurationMillis = 0L;
-        forwardLearnLargestDelta = 0f;
-        forwardLearnStartMillis = System.currentTimeMillis();
+        resetForwardLearning(System.currentTimeMillis());
         state = State.LEARN_FORWARD;
         vibrate(35L);
+    }
+
+    private void resetForwardLearning(long nowMillis) {
+        neutralSumX = 0f;
+        neutralSumY = 0f;
+        neutralSumZ = 0f;
+        forwardSumX = 0f;
+        forwardSumY = 0f;
+        forwardSumZ = 0f;
+        neutralSampleCount = 0;
+        forwardSampleCount = 0;
+        forwardLearnStartMillis = nowMillis;
     }
 
     private void pauseRace() {
@@ -990,13 +1079,16 @@ public final class TiltRushView extends View implements SensorEventListener {
     public void onSensorChanged(SensorEvent event) {
         float x = event.values[0];
         float y = event.values[1];
+        float z = event.values[2];
 
         if (usingAccelerometerFallback) {
             rawScreenX = rawScreenX * 0.82f + x * 0.18f;
             rawScreenY = rawScreenY * 0.82f + y * 0.18f;
+            rawScreenZ = rawScreenZ * 0.82f + z * 0.18f;
         } else {
             rawScreenX = x;
             rawScreenY = y;
+            rawScreenZ = z;
         }
 
         int rotation = Surface.ROTATION_0;
@@ -1005,13 +1097,16 @@ public final class TiltRushView extends View implements SensorEventListener {
 
         float screenX = GameMath.remapScreenX(rawScreenX, rawScreenY, rotation);
         float screenY = GameMath.remapScreenY(rawScreenX, rawScreenY, rotation);
+        float screenZ = rawScreenZ;
 
         filteredScreenX = filteredScreenX * 0.78f + screenX * 0.22f;
         filteredScreenY = filteredScreenY * 0.78f + screenY * 0.22f;
+        filteredScreenZ = filteredScreenZ * 0.78f + screenZ * 0.22f;
 
         if (!calibrated && state == State.INTRO) {
             calibrationX = filteredScreenX;
             calibrationY = filteredScreenY;
+            calibrationZ = filteredScreenZ;
         }
     }
 
@@ -1177,13 +1272,12 @@ public final class TiltRushView extends View implements SensorEventListener {
     }
 
     private Point worldToScreen(float worldX, float worldY) {
-        float rotation = -carAngle + (float) Math.PI / 2f;
-        float cosine = (float) Math.cos(rotation);
-        float sine = (float) Math.sin(rotation);
         float dx = (worldX - cameraX) * cameraZoom;
         float dy = (worldY - cameraY) * cameraZoom;
-        return new Point(getWidth() / 2f + dx * cosine - dy * sine,
-                getHeight() * 0.62f + dx * sine + dy * cosine);
+        return new Point(getWidth() / 2f
+                + GameMath.worldVectorToScreenX(dx, dy, carAngle),
+                getHeight() * 0.62f
+                + GameMath.worldVectorToScreenY(dx, dy, carAngle));
     }
 
     private Nearest nearestTrackPoint(float x, float y) {

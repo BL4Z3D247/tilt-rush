@@ -13,25 +13,31 @@ final class GameMath {
         return from + (to - from) * amount;
     }
 
-    /**
-     * Converts a calibrated screen-relative pitch delta into throttle.
-     * forwardDirection is learned from the player's actual forward tilt and
-     * is therefore either +1 or -1 depending on the device/orientation.
-     */
-    static float throttleFromScreenTilt(float currentScreenY, float calibratedScreenY,
-                                        float fullScaleDelta, float forwardDirection) {
-        float safeScale = Math.max(0.001f, Math.abs(fullScaleDelta));
-        float safeDirection = forwardDirection < 0f ? -1f : 1f;
-        return clamp(((currentScreenY - calibratedScreenY) / safeScale) * safeDirection,
-                -1f, 1f);
+    static float dot3(float ax, float ay, float az, float bx, float by, float bz) {
+        return ax * bx + ay * by + az * bz;
     }
 
-    static float learnedForwardDirection(float largestForwardDelta, float fallbackDirection,
-                                         float minimumUsefulDelta) {
-        if (Math.abs(largestForwardDelta) < Math.abs(minimumUsefulDelta)) {
-            return fallbackDirection < 0f ? -1f : 1f;
-        }
-        return largestForwardDelta < 0f ? -1f : 1f;
+    static float magnitude3(float x, float y, float z) {
+        return (float) Math.sqrt(x * x + y * y + z * z);
+    }
+
+    /**
+     * Converts the change from the neutral gravity vector into throttle by
+     * projecting it onto the exact 3D forward gesture learned from the player.
+     */
+    static float throttleFromVector(float deltaX, float deltaY, float deltaZ,
+                                    float forwardAxisX, float forwardAxisY,
+                                    float forwardAxisZ, float fullScaleDelta) {
+        float axisMagnitude = magnitude3(forwardAxisX, forwardAxisY, forwardAxisZ);
+        if (axisMagnitude < 0.0001f) return 0f;
+
+        float normalizedX = forwardAxisX / axisMagnitude;
+        float normalizedY = forwardAxisY / axisMagnitude;
+        float normalizedZ = forwardAxisZ / axisMagnitude;
+        float projection = dot3(deltaX, deltaY, deltaZ,
+                normalizedX, normalizedY, normalizedZ);
+        float safeScale = Math.max(0.001f, Math.abs(fullScaleDelta));
+        return clamp(projection / safeScale, -1f, 1f);
     }
 
     static float remapScreenX(float rawX, float rawY, int rotationQuarterTurns) {
@@ -52,6 +58,24 @@ final class GameMath {
             case 0:
             default: return rawY;
         }
+    }
+
+    /**
+     * Rotates a world vector into the camera frame. The car's forward heading
+     * must map toward the top of the display because the ship sprite points up.
+     */
+    static float worldVectorToScreenX(float worldDx, float worldDy, float headingRadians) {
+        float rotation = -headingRadians - (float) Math.PI / 2f;
+        float cosine = (float) Math.cos(rotation);
+        float sine = (float) Math.sin(rotation);
+        return worldDx * cosine - worldDy * sine;
+    }
+
+    static float worldVectorToScreenY(float worldDx, float worldDy, float headingRadians) {
+        float rotation = -headingRadians - (float) Math.PI / 2f;
+        float cosine = (float) Math.cos(rotation);
+        float sine = (float) Math.sin(rotation);
+        return worldDx * sine + worldDy * cosine;
     }
 
     static String formatTime(long millis) {

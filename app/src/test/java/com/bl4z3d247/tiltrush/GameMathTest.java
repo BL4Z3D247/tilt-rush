@@ -24,34 +24,51 @@ public final class GameMathTest {
     }
 
     @Test
-    public void positiveSensorDeltaCanBeLearnedAsForward() {
-        assertEquals(1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f, 1f), 0.001f);
+    public void learnedThreeAxisForwardGestureProducesPositiveThrottle() {
+        // The learned forward gesture spans Y and Z, which the old one-axis
+        // implementation could not interpret reliably.
+        float magnitude = GameMath.magnitude3(0f, -2f, 3f);
+        assertEquals(1f, GameMath.throttleFromVector(
+                0f, -2f, 3f,
+                0f, -2f / magnitude, 3f / magnitude,
+                magnitude), 0.001f);
     }
 
     @Test
-    public void negativeSensorDeltaCanBeLearnedAsForward() {
-        assertEquals(1f, GameMath.throttleFromScreenTilt(0.4f, 4f, 3.6f, -1f), 0.001f);
+    public void oppositeThreeAxisGestureProducesReverseThrottle() {
+        float magnitude = GameMath.magnitude3(1f, -2f, 2f);
+        assertEquals(-1f, GameMath.throttleFromVector(
+                -1f, 2f, -2f,
+                1f / magnitude, -2f / magnitude, 2f / magnitude,
+                magnitude), 0.001f);
     }
 
     @Test
-    public void oppositeTiltBecomesBrakeAfterLearning() {
-        assertEquals(-1f, GameMath.throttleFromScreenTilt(7.6f, 4f, 3.6f, -1f), 0.001f);
+    public void perpendicularTiltDoesNotAccelerate() {
+        assertEquals(0f, GameMath.throttleFromVector(
+                3f, 0f, 0f,
+                0f, 1f, 0f,
+                3f), 0.001f);
     }
 
     @Test
-    public void neutralPoseProducesNoThrottle() {
-        assertEquals(0f, GameMath.throttleFromScreenTilt(4f, 4f, 3.6f, -1f), 0.001f);
+    public void carForwardHeadingRendersTowardTopOfScreen() {
+        float heading = 0f;
+        assertEquals(0f, GameMath.worldVectorToScreenX(1f, 0f, heading), 0.001f);
+        assertEquals(-1f, GameMath.worldVectorToScreenY(1f, 0f, heading), 0.001f);
     }
 
     @Test
-    public void forwardLearningUsesTheObservedSign() {
-        assertEquals(-1f, GameMath.learnedForwardDirection(-2.1f, 1f, 0.35f), 0.001f);
-        assertEquals(1f, GameMath.learnedForwardDirection(2.1f, -1f, 0.35f), 0.001f);
+    public void carRightSideRendersTowardRightOfScreen() {
+        float heading = 0f;
+        assertEquals(1f, GameMath.worldVectorToScreenX(0f, 1f, heading), 0.001f);
+        assertEquals(0f, GameMath.worldVectorToScreenY(0f, 1f, heading), 0.001f);
     }
 
     @Test
-    public void weakForwardLearningKeepsFallback() {
-        assertEquals(-1f, GameMath.learnedForwardDirection(0.1f, -1f, 0.35f), 0.001f);
+    public void worldBehindCarRendersBelowShip() {
+        float heading = 0f;
+        assertEquals(1f, GameMath.worldVectorToScreenY(-1f, 0f, heading), 0.001f);
     }
 
     @Test
